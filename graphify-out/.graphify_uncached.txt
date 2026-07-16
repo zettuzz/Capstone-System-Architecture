@@ -1,0 +1,3 @@
+D:\Capstone Generator\capstone-ai\stitch-assets\html\blueprint-studio.html
+D:\Capstone Generator\capstone-ai\stitch-assets\html\chat.html
+D:\Capstone Generator\capstone-ai\stitch-assets\html\landing.html
