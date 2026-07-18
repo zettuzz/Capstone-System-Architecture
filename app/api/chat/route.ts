@@ -1,4 +1,4 @@
-import { getChatCompletionStream, ChatMessage } from '@/lib/openrouter';
+import { getChatCompletionStream, ChatMessage, LLMError, type LLMProvider } from '@/lib/llm-providers';
 import { checkRateLimit } from '@/lib/ratelimit';
 
 const SYSTEM_PROMPT = `You are CapstoneAI, an expert thesis adviser for CS/IT students in the Philippines.
@@ -45,17 +45,19 @@ The instruction block tells the system what nodes to create on the graph.
 
 Format:
 <!-- INTERVIEW_INSTRUCTION
-{"action":"create_node","nodeTitle":"TITLE","nodeSummary":"2-3 sentence summary","nodeType":"topic","parentNodeId":"PARENT_ID"}
+{"action":"create_node","nodeTitle":"TITLE","nodeSummary":"2-3 sentence summary","nodeType":"topic","phase":"PHASE_NAME","parentNodeId":"PARENT_ID"}
 -->
+
+Where phase is one of: problem, system_design, tech_assessment, deep_dive, research, complete
 
 Or for research:
 <!-- INTERVIEW_INSTRUCTION
 {"action":"search_research","query":"search query here"}
 -->
 
-Or for grading:
+Or for grading and completing the project:
 <!-- INTERVIEW_INSTRUCTION
-{"action":"grade_project"}
+{"action":"complete_project_review","finalGrade":"8.5","feedback":"brief feedback on innovation, technical quality, market potential, and suggestions"}
 -->
 
 Rules:
@@ -68,17 +70,18 @@ Rules:
 - Tailor to Philippine CS/IT academic context
 - Move through phases naturally — do not skip ahead
 - When moving to Phase 5, first say you will search for similar systems, then use "search_research"
-- After research is shown to student, if they seem satisfied, use "grade_project"
-- The parentNodeId is usually "idea-hub" for top-level topics, or the id of a more specific parent
+- After research is shown to student, if they seem satisfied, use "complete_project_review" with a finalGrade (number string, e.g. "8.5") and feedback
+- The parentNodeId for top-level topics should be the current node ID (the node the student is chatting in)
 - nodeType is "topic" for most nodes, "research" for research findings
-- nodeSummary should capture the KEY DECISION or INFORMATION from the exchange`;
+- nodeSummary should capture the KEY DECISION or INFORMATION from the exchange
+- ALWAYS include the phase field in create_node instructions so the system tracks interview progress`;
 
 export async function POST(request: Request) {
   try {
     const forwarded = request.headers.get('x-forwarded-for');
     const ip = forwarded?.split(',')[0]?.trim() || 'anonymous';
 
-    const rateLimit = await checkRateLimit(`ratelimit:chat:${ip}`, 30, 3600);
+    const rateLimit = await checkRateLimit(`ratelimit:chat:${ip}`, 30, 60);
     if (!rateLimit.allowed) {
       return new Response(JSON.stringify({
         error: 'Rate limit exceeded. Please try again later.',
@@ -93,7 +96,8 @@ export async function POST(request: Request) {
       });
     }
 
-    const { messages, title, searchContext, nodeTitle, nodeContext } = await request.json();
+    const { messages, title, searchContext, nodeTitle, nodeContext, nodeId, provider: reqProvider, userApiKey } = await request.json();
+    const provider: LLMProvider = reqProvider || "nvidia";
 
     let systemMessage = SYSTEM_PROMPT;
 
@@ -109,8 +113,21 @@ export async function POST(request: Request) {
       systemMessage += `\n\n${nodeContext}`;
     }
 
+    if (nodeId) {
+      systemMessage += `\n\nThe current node ID is "${nodeId}". When creating child nodes with create_node, use this as parentNodeId for top-level topics.`;
+    }
+
     if (searchContext) {
       systemMessage += `\n\n## Web Search Results (similar systems found):\n${searchContext}\n\nUse these results to inform your response. Reference specific systems when relevant. Identify what's novel vs what already exists.`;
+    }
+
+    const clientSystemMessages = messages
+      .filter((m: { role: string }) => m.role === 'system')
+      .map((m: { content: string }) => m.content)
+      .join('\n\n');
+
+    if (clientSystemMessages) {
+      systemMessage += `\n\n## Additional Context\n${clientSystemMessages}`;
     }
 
     const formattedMessages: ChatMessage[] = [
@@ -118,7 +135,7 @@ export async function POST(request: Request) {
       ...messages.filter((m: { role: string }) => m.role !== 'system')
     ];
 
-    const stream = await getChatCompletionStream(formattedMessages);
+    const stream = await getChatCompletionStream(formattedMessages, provider, userApiKey);
     const encoder = new TextEncoder();
 
     const readable = new ReadableStream({
@@ -131,10 +148,21 @@ export async function POST(request: Request) {
             }
           }
           controller.enqueue(encoder.encode('0:[DONE]\n'));
-        } catch (err) {
-          controller.enqueue(encoder.encode(`3:${JSON.stringify(err)}\n`));
-        } finally {
           controller.close();
+        } catch (err) {
+          const status = err instanceof LLMError ? err.status : 502;
+          const retryAfter = err instanceof LLMError ? err.retryAfter : null;
+          const message = err instanceof Error ? err.message : 'Stream error';
+          if (!controller.desiredSize || controller.desiredSize <= 0) {
+            controller.error(new Error(message));
+          } else {
+            const meta = retryAfter != null ? ` (retry after ${retryAfter}s)` : '';
+            controller.enqueue(encoder.encode(`0:${JSON.stringify('[ERROR] ' + message + meta)}\n`));
+            controller.enqueue(encoder.encode('0:[DONE]\n'));
+          }
+          try {
+            controller.close();
+          } catch {}
         }
       }
     });
@@ -148,7 +176,8 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error('Error in chat API:', error);
-    return new Response(JSON.stringify({ error: 'Internal server error' }), {
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });

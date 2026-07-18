@@ -1,60 +1,61 @@
 'use client';
 
-import { InterviewPhase } from '@/types';
-
-const PHASE_LABELS: Record<InterviewPhase, string> = {
-  problem: 'Problem',
-  system_design: 'System Design',
-  tech_assessment: 'Tech Assessment',
-  deep_dive: 'Deep Dive',
-  research: 'Research',
-  complete: 'Complete',
-};
-
 interface WorkspaceToolbarProps {
-  onAddNode: () => void;
   onGenerateBlueprint: () => void;
+  onNewIdea: () => void;
+  onAutoLayout: () => void;
   nodeCount: number;
-  phase?: InterviewPhase;
+  blueprintReady: boolean;
+  projectTitle?: string;
 }
 
-export default function WorkspaceToolbar({ onAddNode, onGenerateBlueprint, nodeCount, phase }: WorkspaceToolbarProps) {
+export default function WorkspaceToolbar({ onGenerateBlueprint, onNewIdea, onAutoLayout, nodeCount, blueprintReady, projectTitle }: WorkspaceToolbarProps) {
   return (
     <div className="flex items-center justify-between px-4 py-2 bg-surface border-b border-surface-border">
-      <div className="flex items-center gap-3">
-        <span className="material-symbols-outlined text-text-muted text-[18px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 400 'GRAD' 0 'opsz' 24" }}>
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="material-symbols-outlined text-text-muted text-[18px] shrink-0" style={{ fontVariationSettings: "'FILL' 0 'wght' 400 'GRAD' 0 'opsz' 24" }}>
           account_tree
         </span>
-        <span className="text-text-muted font-mono text-[11px] uppercase tracking-wider">
-          Workspace
-        </span>
-        <span className="text-text-muted font-mono text-[10px]">
+        {projectTitle && (
+          <span className="text-text-main font-mono text-[12px] font-bold truncate max-w-[240px]">
+            {projectTitle}
+          </span>
+        )}
+        <span className="text-text-muted font-mono text-[10px] shrink-0">
           {nodeCount} {nodeCount === 1 ? 'node' : 'nodes'}
         </span>
-        {phase && (
-          <div className="flex items-center gap-1.5 px-2 py-0.5 border border-surface-border">
-            <div className={`phase-dot phase-${phase}`} />
-            <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider">
-              {PHASE_LABELS[phase]}
-            </span>
-          </div>
-        )}
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         <button
-          onClick={onAddNode}
+          onClick={onNewIdea}
           className="flex items-center gap-1.5 px-3 py-1.5 border border-surface-border text-text-muted text-[12px] font-mono hover:border-white/30 hover:text-text-main transition-colors"
         >
           <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 400 'GRAD' 0 'opsz' 24" }}>
-            add
+            lightbulb
           </span>
-          Add Node
+          New Idea
+        </button>
+
+        <button
+          onClick={onAutoLayout}
+          className="flex items-center gap-1.5 px-3 py-1.5 border border-surface-border text-text-muted text-[12px] font-mono hover:border-white/30 hover:text-text-main transition-colors"
+        >
+          <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 400 'GRAD' 0 'opsz' 24" }}>
+            auto_fix
+          </span>
+          Auto Layout
         </button>
 
         <button
           onClick={onGenerateBlueprint}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-black text-[12px] font-mono font-bold hover:bg-neutral-200 transition-colors"
+          disabled={!blueprintReady}
+          title={blueprintReady ? 'Generate Blueprint' : 'Finish generating the structure first'}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-mono font-bold transition-colors ${
+            blueprintReady
+              ? 'bg-white text-black hover:bg-neutral-200'
+              : 'bg-white/20 text-text-muted cursor-not-allowed'
+          }`}
         >
           <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 600 'GRAD' 0 'opsz' 20" }}>
             auto_awesome

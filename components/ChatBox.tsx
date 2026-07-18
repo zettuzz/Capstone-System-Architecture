@@ -4,6 +4,10 @@ import { useState, useEffect, useRef, forwardRef, useImperativeHandle, useCallba
 import { Message } from '@/types';
 import { useRouter } from 'next/navigation';
 import MarkdownIt from 'markdown-it';
+import { useLLMProvider } from '@/components/LLMProviderContext';
+import { readSSEStream } from '@/lib/stream';
+import APIKeyPrompt from '@/components/APIKeyPrompt';
+import { estimateTokensFromMessages } from '@/lib/user-keys';
 
 const md = new MarkdownIt({ html: false, breaks: true, linkify: true });
 
@@ -22,42 +26,12 @@ async function readStream(
   onDone: () => void,
   onError: (err: string) => void
 ) {
-  const reader = response.body?.getReader();
-  if (!reader) return onError('No response body');
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (line.startsWith('0:')) {
-          const data = line.slice(2);
-          if (data === '[DONE]') {
-            onDone();
-            return;
-          }
-          try {
-            onToken(JSON.parse(data));
-          } catch {
-            // skip malformed
-          }
-        } else if (line.startsWith('3:')) {
-          onError(line.slice(2));
-          return;
-        }
-      }
-    }
-    onDone();
-  } catch (err) {
-    onError(String(err));
+  for await (const event of readSSEStream(response)) {
+    if (event.type === 'token') onToken(event.data!);
+    else if (event.type === 'done') { onDone(); return; }
+    else if (event.type === 'error') { onError(event.data!); return; }
   }
+  onDone();
 }
 
 const SEARCH_KEYWORDS = [
@@ -82,8 +56,11 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
   const [loading, setLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [showAPIKeyPrompt, setShowAPIKeyPrompt] = useState(false);
+  const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
+  const { provider, userKeys, canMakeRequest, consumeTokensBudget, tokenBudget } = useLLMProvider();
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -95,11 +72,24 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
     scrollToBottom();
   }, [messages, streamingContent, scrollToBottom]);
 
+  const prepareRequest = useCallback(() => {
+    return { userApiKey: !!userKeys[provider] ? userKeys[provider] : undefined };
+  }, [userKeys, provider]);
+
   const fetchStream = useCallback(async (
     chatMessages: { role: string; content: string }[],
     onSuccess: (content: string) => void,
     onFallback: () => void
   ) => {
+    if (!canMakeRequest()) {
+      setShowAPIKeyPrompt(true);
+      setLoading(false);
+      setIsStreaming(false);
+      setMessageQueue([]);
+      return;
+    }
+
+    const { userApiKey } = prepareRequest();
     setLoading(true);
     setIsStreaming(true);
     setStreamingContent('');
@@ -108,7 +98,7 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: chatMessages, title }),
+        body: JSON.stringify({ messages: chatMessages, title, provider, userApiKey }),
       });
 
       let fullContent = '';
@@ -120,12 +110,22 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
           setStreamingContent(fullContent);
         },
         () => {
+          if (!userApiKey) {
+            const inputTokens = estimateTokensFromMessages(chatMessages);
+            const outputTokens = Math.ceil((fullContent.split(/\s+/).filter(Boolean).length) * 1.3);
+            consumeTokensBudget(inputTokens, outputTokens);
+          }
           onSuccess(fullContent);
           setLoading(false);
           setIsStreaming(false);
           setStreamingContent('');
         },
         () => {
+          if (!userApiKey && fullContent) {
+            const inputTokens = estimateTokensFromMessages(chatMessages);
+            const outputTokens = Math.ceil((fullContent.split(/\s+/).filter(Boolean).length) * 1.3);
+            consumeTokensBudget(inputTokens, outputTokens);
+          }
           onSuccess(fullContent || 'Response interrupted. Please try again.');
           setLoading(false);
           setIsStreaming(false);
@@ -138,7 +138,7 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
       setIsStreaming(false);
       setStreamingContent('');
     }
-  }, []);
+  }, [canMakeRequest, prepareRequest, title, provider, consumeTokensBudget]);
 
   useEffect(() => {
     const initChat = async () => {
@@ -164,9 +164,16 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
     initChat();
   }, [title, initialMessage, fetchStream]);
 
-  const sendMessage = async (searchContext?: string) => {
-    if (!input.trim() && !searchContext) return;
-    if (isStreaming) return;
+  const sendMessage = async (searchContext?: string, queuedText?: string) => {
+    const textToSend = queuedText || input.trim();
+    if (!textToSend && !searchContext) return;
+    if (isStreaming) {
+      if (!searchContext && textToSend) {
+        setMessageQueue(prev => [...prev, textToSend]);
+        setInput('');
+      }
+      return;
+    }
 
     let userMessage: Message;
     let newMessages: Message[];
@@ -175,7 +182,7 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
       userMessage = { role: 'user', content: `[Search results for similar systems]:\n\n${searchContext}\n\nPlease analyze these results and tell me what systems already exist, what's novel, and what gaps remain.` };
       newMessages = [...messages, userMessage];
     } else {
-      userMessage = { role: 'user', content: input };
+      userMessage = { role: 'user', content: textToSend };
       newMessages = [...messages, userMessage];
       setInput('');
     }
@@ -194,6 +201,14 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
       () => setMessages([...newMessages, { role: 'assistant', content: 'Error connecting to AI service. Please try again.' }])
     );
   };
+
+  useEffect(() => {
+    if (!isStreaming && !loading && messageQueue.length > 0) {
+      const next = messageQueue[0];
+      setMessageQueue(prev => prev.slice(1));
+      sendMessage(undefined, next);
+    }
+  }, [isStreaming, loading, messageQueue, sendMessage]);
 
   const triggerSearch = async (currentMessages: Message[]) => {
     const query = extractSearchQuery(currentMessages.map(m => ({ role: m.role, content: m.content })));
@@ -223,32 +238,52 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
   };
 
   const handleEvaluate = async () => {
+    if (!canMakeRequest()) {
+      setShowAPIKeyPrompt(true);
+      return;
+    }
+
+    const { userApiKey } = prepareRequest();
     setLoading(true);
     try {
+      const inputMsgs = messages.map(m => ({ role: m.role, content: m.content }));
       const response = await fetch('/api/evaluate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: messages.map(m => ({
-            role: m.role,
-            content: m.content
-          })),
-          title
+          messages: inputMsgs,
+          title,
+          provider,
+          userApiKey,
         }),
       });
 
       const data = await response.json();
+
+      if (!userApiKey) {
+        const inputTokens = estimateTokensFromMessages(inputMsgs);
+        const outputTokens = Math.ceil((JSON.stringify(data.evaluation || '').split(/\s+/).filter(Boolean).length) * 1.3);
+        consumeTokensBudget(inputTokens, outputTokens);
+      }
 
       const exportResponse = await fetch('/api/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           evaluation: data.evaluation,
-          messages: messages
+          messages: messages,
+          provider,
+          userApiKey,
         }),
       });
 
       const exportData = await exportResponse.json();
+
+      if (!userApiKey) {
+        const exportInputTokens = estimateTokensFromMessages(inputMsgs) + Math.ceil((JSON.stringify(data.evaluation || '').split(/\s+/).filter(Boolean).length) * 1.3);
+        const exportOutputTokens = Math.ceil((exportData.markdown || '').split(/\s+/).filter(Boolean).length * 1.3);
+        consumeTokensBudget(exportInputTokens, exportOutputTokens);
+      }
 
       const params = new URLSearchParams();
       params.set('evaluation', JSON.stringify(data.evaluation));
@@ -353,10 +388,9 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
                   sendMessage();
                 }
               }}
-              placeholder={isStreaming ? "AI is responding..." : "Refine the idea or ask for suggestions..."}
+              placeholder={isStreaming ? "AI is responding — type to queue..." : "Refine the idea or ask for suggestions..."}
               rows={1}
-              disabled={isStreaming}
-              className="w-full bg-transparent text-text-main placeholder:text-text-muted border-none focus:ring-0 p-0 py-4 font-mono text-[14px] leading-tight outline-none resize-none overflow-hidden block disabled:opacity-50"
+              className="w-full bg-transparent text-text-main placeholder:text-text-muted border-none focus:ring-0 p-0 py-4 font-mono text-[14px] leading-tight outline-none resize-none overflow-hidden block"
             />
             <div className="ml-3 flex items-center gap-3">
               <button
@@ -381,7 +415,32 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
             </div>
           </div>
         </div>
+        {messageQueue.length > 0 && (
+          <div className="flex items-center gap-2 mt-1.5 px-1">
+            <span className="text-[10px] font-mono text-text-muted">
+              {messageQueue.length} queued
+            </span>
+            <button
+              onClick={() => setMessageQueue([])}
+              className="text-[10px] font-mono text-text-muted hover:text-white transition-colors"
+            >
+              [clear]
+            </button>
+          </div>
+        )}
       </div>
+
+      {tokenBudget.dailyUsed > 0 && tokenBudget.dailyUsed < tokenBudget.dailyLimit && !userKeys[provider] && (
+        <div className="absolute top-2 right-2 z-10">
+          <p className="text-[10px] font-mono text-text-muted bg-surface/80 px-2 py-1 border border-surface-border">
+            {tokenBudget.dailyLimit - tokenBudget.dailyUsed} tokens left today
+          </p>
+        </div>
+      )}
+
+      {showAPIKeyPrompt && (
+        <APIKeyPrompt onClose={() => setShowAPIKeyPrompt(false)} blockedProvider={provider} />
+      )}
     </div>
   );
 });

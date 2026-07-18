@@ -1,6 +1,6 @@
 import { redis } from './redis';
 
-export async function getCached<T>(key: string): Promise<T | null> {
+async function getCached<T>(key: string): Promise<T | null> {
   try {
     const data = await redis().get(key);
     return data as T | null;
@@ -9,22 +9,11 @@ export async function getCached<T>(key: string): Promise<T | null> {
   }
 }
 
-export async function setCache(key: string, value: unknown, ttlSeconds: number): Promise<void> {
+async function setCache(key: string, value: unknown, ttlSeconds: number): Promise<void> {
   try {
     await redis().set(key, JSON.stringify(value), { ex: ttlSeconds });
   } catch {
     // silently fail — cache is optional
-  }
-}
-
-export async function invalidateCache(pattern: string): Promise<void> {
-  try {
-    const keys = await redis().keys(pattern);
-    if (keys.length > 0) {
-      await redis().del(...keys);
-    }
-  } catch {
-    // silently fail
   }
 }
 

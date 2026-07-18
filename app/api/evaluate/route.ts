@@ -1,23 +1,16 @@
 import { NextResponse } from 'next/server';
-import { getChatCompletion } from '@/lib/openrouter';
+import { getChatCompletion, ChatMessage, type LLMProvider } from '@/lib/llm-providers';
+import { handleAPIError } from '@/lib/api-error';
 import { searchWeb } from '@/lib/tavily';
 import { getOrSet } from '@/lib/cache';
 import { createClient } from '@/utils/supabase/server';
 import { cookies } from 'next/headers';
+import { auth } from '@clerk/nextjs/server';
+import { simpleHash } from '@/lib/hash';
 
 interface Message {
   role: string;
   content: string;
-}
-
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash).toString(36);
 }
 
 function extractSearchQuery(title: string, messages: Message[]): string {
@@ -41,7 +34,8 @@ function formatSearchResults(results: { results?: Array<{ title: string; url: st
 
 export async function POST(request: Request) {
   try {
-    const { messages, title } = await request.json();
+    const { messages, title, provider: reqProvider, userApiKey } = await request.json();
+    const provider: LLMProvider = reqProvider || "nvidia";
 
     const conversationText = (messages as Message[])
       .map((m) => `${m.role}: ${m.content}`)
@@ -119,7 +113,7 @@ The JSON should have this structure:
         const content = await getChatCompletion([
           { role: 'system', content: systemPrompt },
           { role: 'user', content: conversationText }
-        ]);
+        ], provider, userApiKey);
 
         try {
           const parsed = JSON.parse(content);
@@ -148,16 +142,16 @@ The JSON should have this structure:
     // Save evaluation to DB if user is authenticated
     let sessionId: string | null = null;
     try {
+      const { userId } = await auth();
       const cookieStore = await cookies();
       const supabase = createClient(cookieStore);
-      const { data: { user } } = await supabase.auth.getUser();
 
-      if (user) {
+      if (userId) {
         // Create a session for this evaluation
         const { data: session, error: sessionError } = await supabase
           .from('sessions')
           .insert({
-            user_id: user.id,
+            user_id: userId,
             title: evaluation.title || title || 'Untitled Session',
             conversation: messages,
           })
@@ -170,7 +164,7 @@ The JSON should have this structure:
           // Save evaluation linked to session
           await supabase.from('evaluations').insert({
             session_id: sessionId,
-            user_id: user.id,
+            user_id: userId,
             title: evaluation.title,
             score: evaluation.score,
             feasibility: evaluation.feasibility,
@@ -192,10 +186,6 @@ The JSON should have this structure:
 
     return NextResponse.json({ evaluation, sessionId });
   } catch (error) {
-    console.error('Error in evaluate API:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return handleAPIError(error);
   }
 }

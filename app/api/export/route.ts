@@ -2,25 +2,19 @@ import { NextResponse } from 'next/server';
 import MarkdownIt from 'markdown-it';
 import { createClient } from '@/utils/supabase/server';
 import { cookies } from 'next/headers';
+import { auth } from '@clerk/nextjs/server';
 import { Evaluation } from '@/types';
-import { getChatCompletion, ChatMessage } from '@/lib/openrouter';
+import { getChatCompletion, ChatMessage, type LLMProvider } from '@/lib/llm-providers';
+import { handleAPIError } from '@/lib/api-error';
 import { getOrSet } from '@/lib/cache';
+import { simpleHash } from '@/lib/hash';
 
 const md = new MarkdownIt();
 
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash).toString(36);
-}
-
 export async function POST(request: Request) {
   try {
-    const { evaluation, messages, sessionId, workspaceNodes, workspaceEdges } = await request.json();
+    const { evaluation, messages, sessionId, workspaceNodes, workspaceEdges, provider: reqProvider, userApiKey } = await request.json();
+    const provider: LLMProvider = reqProvider || "nvidia";
 
     const conversationText = (messages as { role: string; content: string }[])
       .map((m) => `${m.role}: ${m.content}`)
@@ -72,7 +66,7 @@ Rules:
           { role: 'user', content: blueprintPrompt }
         ];
 
-        const rawMarkdown = await getChatCompletion(aiMessages);
+        const rawMarkdown = await getChatCompletion(aiMessages, provider, userApiKey);
         const cleaned = rawMarkdown.replace(/^```markdown\n?/i, '').replace(/\n?```$/, '').trim();
 
         // Extract schedule JSON from the end of the response
@@ -96,11 +90,11 @@ Rules:
       604800 // 7 days
     );
 
+    const { userId } = await auth();
     const cookieStore = await cookies();
     const supabase = createClient(cookieStore);
-    const { data: { user } } = await supabase.auth.getUser();
 
-    if (user) {
+    if (userId) {
       if (sessionId) {
         // Update existing session (created during evaluation) with blueprint and workspace
         await supabase.from('sessions').update({
@@ -108,11 +102,11 @@ Rules:
           workspace_nodes: workspaceNodes || '[]',
           workspace_edges: workspaceEdges || '[]',
           updated_at: new Date().toISOString(),
-        }).eq('id', sessionId).eq('user_id', user.id);
+        }).eq('id', sessionId).eq('user_id', userId);
       } else {
         // Create new session (fallback for direct export without evaluation)
         await supabase.from('sessions').insert({
-          user_id: user.id,
+          user_id: userId,
           title: evaluation?.title || 'Untitled Session',
           conversation: messages,
           blueprint: cleanedMarkdown,
@@ -124,10 +118,6 @@ Rules:
 
     return NextResponse.json({ markdown: cleanedMarkdown, html, schedule });
   } catch (error) {
-    console.error('Error in export API:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return handleAPIError(error);
   }
 }

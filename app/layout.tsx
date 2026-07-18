@@ -1,8 +1,9 @@
+import {ClerkProvider} from "@clerk/nextjs";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Space_Grotesk } from "next/font/google";
 import "./globals.css";
-import { AuthProvider } from "@/components/AuthProvider";
+import { LLMProviderProvider } from "@/components/LLMProviderContext";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -43,9 +44,30 @@ export default function RootLayout({
         />
       </head>
       <body suppressHydrationWarning>
-        <AuthProvider>
+        <ClerkProvider
+          appearance={{
+            elements: {
+              card: "bg-[#0a0a0a] border border-white/10 shadow-none",
+              formButtonPrimary: "bg-white text-black font-mono font-bold uppercase tracking-wider hover:bg-neutral-200",
+              formFieldInput: "bg-[#171717] border border-white/10 text-white font-mono",
+              formFieldLabel: "text-[#a3a3a3] font-mono uppercase tracking-wider text-[11px]",
+              footerActionLink: "text-[#a3a3a3] hover:text-white font-mono",
+              dividerLine: "bg-white/10",
+              dividerText: "text-[#a3a3a3] font-mono",
+              socialButtonsBlockButton: "bg-[#171717] border border-white/10 text-white font-mono hover:bg-[#1a1a1a]",
+              socialButtonsBlockButtonText: "text-white font-mono",
+              navbar: "bg-[#0a0a0a] border-b border-white/10",
+              navbarButton: "text-[#a3a3a3] hover:text-white",
+              userButtonPopoverCard: "bg-[#0a0a0a] border border-white/10",
+              userButtonPopoverActions: "bg-[#0a0a0a]",
+              userButtonPopoverActionButton: "text-[#a3a3a3] hover:text-white hover:bg-[#171717]",
+            },
+          }}
+        >
+          <LLMProviderProvider>
           <div className="min-h-full flex flex-col">{children}</div>
-        </AuthProvider>
+          </LLMProviderProvider>
+        </ClerkProvider>
       </body>
     </html>
   );

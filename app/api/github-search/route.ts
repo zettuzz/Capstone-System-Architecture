@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getOrSet } from '@/lib/cache';
+import { simpleHash } from '@/lib/hash';
 
 interface GitHubRepo {
   name: string;
@@ -9,16 +10,6 @@ interface GitHubRepo {
   stargazers_count: number;
   language: string;
   updated_at: string;
-}
-
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash).toString(36);
 }
 
 export async function POST(request: Request) {

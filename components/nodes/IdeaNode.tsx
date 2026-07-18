@@ -2,21 +2,19 @@
 
 import { memo, useState, useCallback } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { WorkspaceNodeData, InterviewPhase } from '@/types';
+import { WorkspaceNodeData } from '@/types';
 import NodeChat from './NodeChat';
 
-const PHASE_COLORS: Record<InterviewPhase, string> = {
-  problem: '#ffffff',
-  system_design: '#aaaaaa',
-  tech_assessment: '#888888',
-  deep_dive: '#666666',
-  research: '#444444',
-  complete: '#222222',
+const NODE_HEADER_ACCENT: Record<string, string> = {
+  idea: 'node-header-accent-idea',
+  topic: 'node-header-accent-topic',
+  research: 'node-header-accent-research',
+  blueprint: 'node-header-accent-blueprint',
 };
 
 function IdeaNode({ id, data }: NodeProps) {
   const nodeData = data as WorkspaceNodeData;
-  const { title, nodeType, messages, summary, phase, isExpanded, onToggleExpand, onAddMessage, onSuggestNode, onNodeCreate } = nodeData;
+  const { title, nodeType, messages, summary, phase, isExpanded, onToggleExpand, onAddMessage, onSuggestNode, onNodeCreate, onDeleteSubtree, onUndoNode } = nodeData;
   const [isHovered, setIsHovered] = useState(false);
 
   const handleToggle = useCallback(() => {
@@ -33,9 +31,17 @@ function IdeaNode({ id, data }: NodeProps) {
 
   const handleNodeCreate = useCallback((instruction: import('@/types').InterviewInstruction) => {
     if (onNodeCreate) {
-      onNodeCreate(instruction);
+      onNodeCreate({ ...instruction, sourceNodeId: id });
     }
-  }, [onNodeCreate]);
+  }, [onNodeCreate, id]);
+
+  const handleDelete = useCallback(() => {
+    if (nodeType === 'idea') {
+      onDeleteSubtree?.(id);
+    } else {
+      onUndoNode?.(id);
+    }
+  }, [id, nodeType, onDeleteSubtree, onUndoNode]);
 
   const userMessages = messages.filter(m => m.role === 'user').length;
   const aiMessages = messages.filter(m => m.role === 'assistant').length;
@@ -54,19 +60,28 @@ function IdeaNode({ id, data }: NodeProps) {
       <div className={`workspace-node-card ${isExpanded ? 'active' : ''}`}>
         {/* Compact Header */}
         <div
-          className="flex items-center gap-2 p-3 cursor-pointer select-none"
+          className={`flex items-center gap-2 p-3 cursor-grab active:cursor-grabbing select-none ${NODE_HEADER_ACCENT[nodeType] || ''}`}
           onClick={handleToggle}
         >
           <div className={`node-dot node-dot-${nodeType}`} />
           <span className="text-text-main text-sm font-medium flex-1 truncate">{title}</span>
           {phase && (
             <div
-              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-              style={{ background: PHASE_COLORS[phase] || '#888888' }}
+              className={`w-2 h-2 rounded-full flex-shrink-0 ${phase === 'complete' ? 'phase-dot-complete' : 'phase-dot-progress'}`}
               title={`Phase: ${phase}`}
             />
           )}
           <div className="flex items-center gap-1 text-text-muted">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDelete();
+              }}
+              title={nodeType === 'idea' ? 'Delete idea and all connected nodes' : 'Undo this node and rewind parent chat'}
+              className="hover:text-red-400 transition-colors"
+            >
+              <span className="material-symbols-outlined text-[14px]">close</span>
+            </button>
             <span className="text-[10px] font-mono">{messages.length}</span>
             <span className="material-symbols-outlined text-[14px]">
               {isExpanded ? 'expand_less' : 'expand_more'}
@@ -78,6 +93,7 @@ function IdeaNode({ id, data }: NodeProps) {
         {isExpanded && (
           <div className="border-t border-surface-border">
             <NodeChat
+              nodeId={id}
               messages={messages}
               onAddMessage={handleAddMessage}
               onSuggestNode={handleSuggestNode}
@@ -85,6 +101,7 @@ function IdeaNode({ id, data }: NodeProps) {
               nodeTitle={title}
               nodeType={nodeType}
               phase={phase}
+              readOnly={nodeType !== 'idea' || phase === 'complete'}
             />
           </div>
         )}

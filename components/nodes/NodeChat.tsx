@@ -3,23 +3,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import MarkdownIt from 'markdown-it';
 import type { InterviewInstruction, InterviewPhase } from '@/types';
+import { useLLMProvider } from '@/components/LLMProviderContext';
+import { readSSEStream } from '@/lib/stream';
+import { parseInstruction, shouldSuggestNode, extractNodeSuggestion } from '@/lib/instruction-parser';
+import { estimateTokensFromMessages } from '@/lib/user-keys';
+import APIKeyPrompt from '@/components/APIKeyPrompt';
 
 const md = new MarkdownIt({ html: false, breaks: true, linkify: true });
-
-const INSTRUCTION_REGEX = /<!--\s*INTERVIEW_INSTRUCTION\s*([\s\S]*?)\s*-->/;
-
-function parseInstruction(content: string): { clean: string; instruction: InterviewInstruction | null } {
-  const match = content.match(INSTRUCTION_REGEX);
-  if (!match) return { clean: content, instruction: null };
-
-  const clean = content.replace(INSTRUCTION_REGEX, '').trim();
-  try {
-    const instruction = JSON.parse(match[1]) as InterviewInstruction;
-    return { clean, instruction };
-  } catch {
-    return { clean, instruction: null };
-  }
-}
 
 const PHASE_LABELS: Record<InterviewPhase, string> = {
   problem: 'Problem',
@@ -31,6 +21,7 @@ const PHASE_LABELS: Record<InterviewPhase, string> = {
 };
 
 interface NodeChatProps {
+  nodeId: string;
   messages: { role: 'user' | 'assistant'; content: string }[];
   onAddMessage: (msg: { role: 'user' | 'assistant'; content: string }) => void;
   onSuggestNode: (title: string) => void;
@@ -39,14 +30,18 @@ interface NodeChatProps {
   nodeType: 'idea' | 'topic' | 'research' | 'blueprint';
   phase?: InterviewPhase;
   autoMessage?: string;
+  readOnly?: boolean;
 }
 
-export default function NodeChat({ messages, onAddMessage, onSuggestNode, onNodeCreate, nodeTitle, nodeType, phase, autoMessage }: NodeChatProps) {
+export default function NodeChat({ nodeId, messages, onAddMessage, onSuggestNode, onNodeCreate, nodeTitle, nodeType, phase, autoMessage, readOnly }: NodeChatProps) {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showAPIKeyPrompt, setShowAPIKeyPrompt] = useState(false);
+  const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const autoSentRef = useRef(false);
+  const { provider, userKeys, canMakeRequest, consumeTokensBudget, tokenBudget } = useLLMProvider();
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -54,64 +49,111 @@ export default function NodeChat({ messages, onAddMessage, onSuggestNode, onNode
     }
   }, [messages]);
 
-  const sendMessage = useCallback(async (overrideInput?: string) => {
-    const text = overrideInput || input.trim();
-    if (!text || isLoading) return;
+  const sendMessage = useCallback(async (overrideInput?: string, queuedText?: string) => {
+    const text = queuedText || overrideInput || input.trim();
+    if (!text) return;
+    if (isLoading) {
+      setMessageQueue(prev => [...prev, text]);
+      setInput('');
+      return;
+    }
 
+    const hasUserKey = !!userKeys[provider];
+    if (!hasUserKey && !canMakeRequest()) {
+      setShowAPIKeyPrompt(true);
+      setMessageQueue([]);
+      return;
+    }
+
+    const userApiKey = hasUserKey ? userKeys[provider] : undefined;
     const userMsg = { role: 'user' as const, content: text };
     onAddMessage(userMsg);
     if (!overrideInput) setInput('');
     setIsLoading(true);
 
-    try {
-      const systemContext = getSystemContext(nodeTitle, nodeType, phase);
-      const chatMessages = [
-        { role: 'system', content: systemContext },
-        ...messages,
-        userMsg,
-      ];
-
-      const response = await fetch('/api/chat', {
+    const runRequest = async (): Promise<void> => {
+      let response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: chatMessages,
+          messages: [
+            { role: 'system', content: getSystemContext(nodeTitle, nodeType, phase) },
+            ...messages,
+            userMsg,
+          ],
           title: nodeTitle,
           nodeTitle: nodeTitle,
+          nodeId: nodeId,
           nodeContext: `This chat is about: ${nodeTitle}`,
+          provider,
+          userApiKey,
         }),
       });
 
-      if (!response.ok) throw new Error('Chat failed');
+      if (!response.ok) {
+        const retryAfter = Number(response.headers.get('retry-after')) || null;
+        if (response.status === 429 && !overrideInput) {
+          await new Promise((r) => setTimeout(r, (retryAfter || 3) * 1000));
+          response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: [
+                { role: 'system', content: getSystemContext(nodeTitle, nodeType, phase) },
+                ...messages,
+                userMsg,
+              ],
+              title: nodeTitle,
+              nodeTitle: nodeTitle,
+              nodeId: nodeId,
+              nodeContext: `This chat is about: ${nodeTitle}`,
+              provider,
+              userApiKey,
+            }),
+          });
+        }
+        if (!response.ok) {
+          let message = 'Chat failed. Please try again.';
+          try {
+            const body = await response.json();
+            if (body?.error) message = body.error;
+          } catch {}
+          if (response.status === 429) {
+            const secs = retryAfter ?? 30;
+            message = `Rate limit reached — please retry in ${secs}s.`;
+          } else if (response.status >= 500) {
+            message = 'Server error — please retry.';
+          }
+          throw new Error(message);
+        }
+      }
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No reader');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
       let fullContent = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('0:')) {
-            const data = line.slice(2);
-            if (data === '[DONE]') break;
-            try {
-              const token = JSON.parse(data);
-              fullContent += token;
-            } catch {}
+      for await (const event of readSSEStream(response)) {
+        if (event.type === 'error') throw new Error(event.data || 'Stream error');
+        if (event.type === 'done') break;
+        if (event.type === 'token') {
+          const token = event.data;
+          if (typeof token === 'string' && token.startsWith('[ERROR]')) {
+            throw new Error(token.slice('[ERROR]'.length).trim());
           }
+          fullContent += token;
         }
       }
 
       if (fullContent) {
+        if (!hasUserKey) {
+          const allMsgsForTokens = [
+            { role: 'system', content: getSystemContext(nodeTitle, nodeType, phase) },
+            ...messages,
+            userMsg,
+          ];
+          const inputTokens = estimateTokensFromMessages(allMsgsForTokens);
+          const outputTokens = Math.ceil((fullContent.split(/\s+/).filter(Boolean).length) * 1.3);
+          consumeTokensBudget(inputTokens, outputTokens);
+        }
+
         const { clean, instruction } = parseInstruction(fullContent);
 
         onAddMessage({ role: 'assistant', content: clean });
@@ -127,13 +169,26 @@ export default function NodeChat({ messages, onAddMessage, onSuggestNode, onNode
           }
         }
       }
+    };
+
+    try {
+      await runRequest();
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Connection error. Please try again.';
       console.error('Chat error:', err);
-      onAddMessage({ role: 'assistant', content: 'Connection error. Please try again.' });
+      onAddMessage({ role: 'assistant', content: message });
     } finally {
       setIsLoading(false);
     }
-  }, [input, isLoading, messages, nodeTitle, nodeType, phase, onAddMessage, onSuggestNode, onNodeCreate]);
+  }, [input, isLoading, messages, nodeTitle, nodeType, phase, onAddMessage, onSuggestNode, onNodeCreate, provider, userKeys, canMakeRequest, consumeTokensBudget, nodeId]);
+
+  useEffect(() => {
+    if (!isLoading && messageQueue.length > 0) {
+      const next = messageQueue[0];
+      setMessageQueue(prev => prev.slice(1));
+      sendMessage(undefined, next);
+    }
+  }, [isLoading, messageQueue, sendMessage]);
 
   useEffect(() => {
     if (autoMessage && !autoSentRef.current && messages.length === 0) {
@@ -194,7 +249,15 @@ export default function NodeChat({ messages, onAddMessage, onSuggestNode, onNode
         </div>
       )}
 
-      <div ref={scrollRef} className="node-chat-area p-3 space-y-3 min-h-[120px] max-h-[300px]">
+      {tokenBudget.dailyUsed > 0 && tokenBudget.dailyUsed < tokenBudget.dailyLimit && !userKeys[provider] && (
+        <div className="px-3 py-1 border-b border-surface-border">
+          <p className="text-[9px] font-mono text-text-muted">
+            {tokenBudget.dailyLimit - tokenBudget.dailyUsed} tokens left today
+          </p>
+        </div>
+      )}
+
+      <div ref={scrollRef} className="node-chat-area nodrag nopan nowheel p-3 space-y-3 min-h-[120px] max-h-[300px]" onWheel={(e) => e.stopPropagation()}>
         {messages.length === 0 && (
           <p className="text-text-muted text-[11px] font-mono text-center py-4">
             Start a conversation about {nodeTitle}...
@@ -236,38 +299,69 @@ export default function NodeChat({ messages, onAddMessage, onSuggestNode, onNode
         )}
       </div>
 
-      <div className="p-3 border-t border-surface-border">
-        <div className="flex items-end gap-2">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
-            rows={1}
-            className="flex-1 bg-surface-highlight text-text-main text-[13px] font-mono p-2 border border-surface-border focus:border-white/30 outline-none resize-none placeholder:text-text-muted"
-          />
-          <div className="flex flex-col gap-1">
-            <button
-              onClick={() => sendMessage()}
-              disabled={!input.trim() || isLoading}
-              className="px-2 py-1 bg-white text-black text-[11px] font-mono font-bold disabled:opacity-30 hover:bg-neutral-200 transition-colors"
-            >
-              EXE
-            </button>
-            <button
-              onClick={handleSearch}
-              disabled={!input.trim() || isLoading}
-              className="px-2 py-1 border border-surface-border text-text-muted text-[10px] font-mono disabled:opacity-30 hover:border-white/30 hover:text-text-main transition-colors"
-              title="Search web"
-            >
-              <span className="material-symbols-outlined text-[12px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 400 'GRAD' 0 'opsz' 20" }}>
-                search
-              </span>
-            </button>
+      {!readOnly ? (
+        <div className="p-3 border-t border-surface-border">
+          <div className="flex items-end gap-2">
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Type a message..."
+              rows={1}
+              className="nodrag nopan flex-1 bg-surface-highlight text-text-main text-[13px] font-mono p-2 border border-surface-border focus:border-white/30 outline-none resize-none placeholder:text-text-muted"
+            />
+            <div className="flex flex-col gap-1">
+              <button
+                onClick={() => sendMessage()}
+                disabled={!input.trim() || isLoading}
+                className="px-2 py-1 bg-white text-black text-[11px] font-mono font-bold disabled:opacity-30 hover:bg-neutral-200 transition-colors"
+              >
+                EXE
+              </button>
+              <button
+                onClick={handleSearch}
+                disabled={!input.trim() || isLoading}
+                className="px-2 py-1 border border-surface-border text-text-muted text-[10px] font-mono disabled:opacity-30 hover:border-white/30 hover:text-text-main transition-colors"
+                title="Search web"
+              >
+                <span className="material-symbols-outlined text-[12px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 400 'GRAD' 0 'opsz' 20" }}>
+                  search
+                </span>
+              </button>
+            </div>
           </div>
+          {messageQueue.length > 0 && (
+            <div className="flex items-center gap-2 mt-1.5 px-1">
+              <span className="text-[9px] font-mono text-text-muted">
+                {messageQueue.length} queued
+              </span>
+              <button
+                onClick={() => setMessageQueue([])}
+                className="text-[9px] font-mono text-text-muted hover:text-white transition-colors"
+              >
+                [clear]
+              </button>
+            </div>
+          )}
         </div>
-      </div>
+      ) : (
+        <div className="px-3 py-2 border-t border-surface-border">
+          {phase === 'complete' ? (
+            <p className="text-[10px] font-mono text-text-muted text-center">
+              Project complete — interview finished
+            </p>
+          ) : (
+            <p className="text-[10px] font-mono text-text-muted text-center">
+              Reference content — edit in the root idea node
+            </p>
+          )}
+        </div>
+      )}
+
+      {showAPIKeyPrompt && (
+        <APIKeyPrompt onClose={() => setShowAPIKeyPrompt(false)} blockedProvider={provider} />
+      )}
     </div>
   );
 }
@@ -292,34 +386,4 @@ Be concise and actionable.`;
   }
 
   return baseContext;
-}
-
-function shouldSuggestNode(content: string, existingMessages: { role: string; content: string }[]): boolean {
-  if (existingMessages.length < 3) return false;
-
-  const suggestionPatterns = [
-    /we should (also|now) (talk about|discuss|consider|explore)/i,
-    /this (relates?|connects?|leads?) to/i,
-    /you might want to (also|separately)/i,
-    /let's (create|start|make) (a |another )?(new )?(separate )?(node|topic|thread)/i,
-  ];
-
-  return suggestionPatterns.some(p => p.test(content));
-}
-
-function extractNodeSuggestion(content: string): string | null {
-  const patterns = [
-    /let's (?:create|start|make) (?:a |another )?(?:new )?(?:separate )?(?:node|topic|thread) (?:for |about |on )["']?([^"'.]+)["']?/i,
-    /(?:create|start|make) (?:a |another )?(?:new )?(?:node|topic|thread) (?:for |about |on )["']?([^"'.]+)["']?/i,
-    /(?:talk about|discuss|consider|explore) ["']?([^"'.]+)["']?/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = content.match(pattern);
-    if (match?.[1]) {
-      return match[1].trim().slice(0, 50);
-    }
-  }
-
-  return null;
 }

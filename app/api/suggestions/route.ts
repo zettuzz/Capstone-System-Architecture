@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getChatCompletion } from '@/lib/openrouter';
+import { getChatCompletion, type LLMProvider } from '@/lib/llm-providers';
+import { handleAPIError } from '@/lib/api-error';
 
-export async function GET() {
+export async function POST(request: Request) {
   try {
+    const { provider: reqProvider, userApiKey } = await request.json();
+    const provider: LLMProvider = reqProvider || "nvidia";
+
     const content = await getChatCompletion([
       {
         role: 'system',
@@ -20,13 +24,17 @@ Examples of good format: ["Campus flood alert system", "Barangay health tracker"
         role: 'user',
         content: 'Generate 3 capstone project ideas for Filipino CS/IT students.'
       }
-    ]);
+    ], provider, userApiKey);
 
     const ideas = JSON.parse(content);
     return NextResponse.json({ suggestions: ideas });
-  } catch {
-    return NextResponse.json({
-      suggestions: ['Campus flood alert system', 'Barangay health tracker', 'Offline learning app']
-    });
+  } catch (error) {
+    const errorResponse = handleAPIError(error);
+    if (errorResponse.status === 500) {
+      return NextResponse.json({
+        suggestions: ['Campus flood alert system', 'Barangay health tracker', 'Offline learning app']
+      });
+    }
+    return errorResponse;
   }
 }

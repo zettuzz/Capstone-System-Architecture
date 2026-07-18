@@ -2,40 +2,36 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useLLMProvider } from '@/components/LLMProviderContext';
+import { useAuth } from '@clerk/nextjs';
+import { SignInButton, UserButton } from '@clerk/nextjs';
 
 export default function Page() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(true);
+  const { provider, userKeys, canMakeRequest } = useLLMProvider();
+  const { isSignedIn, isLoaded } = useAuth();
   const router = useRouter();
 
-  useEffect(() => {
-    const fetchSuggestions = async () => {
-      try {
-        const res = await fetch('/api/suggestions');
-        const data = await res.json();
-        setSuggestions(data.suggestions || []);
-      } catch {
-        setSuggestions(['AI-powered study planner', 'IoT campus parking', 'Blockchain voting system']);
-      }
+  const fetchSuggestions = async () => {
+    const hasUserKey = !!userKeys[provider];
+    if (!hasUserKey && !canMakeRequest()) {
+      setSuggestions(['AI-powered study planner', 'IoT campus parking', 'Blockchain voting system']);
       setSuggestionsLoading(false);
-    };
-    fetchSuggestions();
-  }, []);
+      return;
+    }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim()) return;
+    const userApiKey = hasUserKey ? userKeys[provider] : undefined;
 
-    setLoading(true);
-    router.push(`/workspace?idea=${encodeURIComponent(input)}`);
-  };
-
-  const refreshSuggestions = async () => {
     setSuggestionsLoading(true);
     try {
-      const res = await fetch('/api/suggestions');
+      const res = await fetch('/api/suggestions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, userApiKey }),
+      });
       const data = await res.json();
       setSuggestions(data.suggestions || []);
     } catch {
@@ -44,8 +40,53 @@ export default function Page() {
     setSuggestionsLoading(false);
   };
 
+  useEffect(() => {
+    fetchSuggestions();
+  }, [provider]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+    if (isLoaded && !isSignedIn) {
+      router.push(`/sign-in?redirect_url=${encodeURIComponent('/')}`);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: input.trim() }),
+      });
+      const data = await res.json();
+      if (data?.project?.id) {
+        router.push(`/workspace?project=${data.project.id}`);
+      } else {
+        throw new Error('No project ID returned');
+      }
+    } catch {
+      router.push(`/workspace?idea=${encodeURIComponent(input)}`);
+    }
+  };
+
+  const refreshSuggestions = () => fetchSuggestions();
+
   return (
     <div className="min-h-screen flex flex-col justify-center items-center relative antialiased selection:bg-white selection:text-black">
+      <div className="absolute top-0 left-0 right-0 p-4 flex justify-end gap-2">
+        {isLoaded && !isSignedIn && (
+          <SignInButton mode="modal">
+            <button className="px-4 py-2 text-[11px] font-mono text-text-muted uppercase tracking-wider border border-surface-border hover:text-white hover:border-white/30 transition-colors">
+              Sign In
+            </button>
+          </SignInButton>
+        )}
+        {isLoaded && isSignedIn && (
+          <UserButton />
+        )}
+      </div>
+
       <main className="w-full max-w-[960px] px-6 flex flex-col items-center justify-center z-10">
         <h1 className="font-display text-[48px] font-bold tracking-[-0.02em] leading-tight mb-10 text-transparent bg-clip-text bg-gradient-to-b from-white to-[#666666] text-center">
           Architect your capstone.
