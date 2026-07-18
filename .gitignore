@@ -42,3 +42,9 @@ next-env.d.ts
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# supabase local config (not needed for production)
+/supabase/config.toml
+
+# generated tool output
+/graphify-out/
