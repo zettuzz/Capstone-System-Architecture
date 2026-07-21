@@ -16,6 +16,17 @@ export async function searchWeb(query: string, maxResults: number = 5) {
       max_results: maxResults,
       search_depth: "advanced",
       include_answer: true,
+      exclude_domains: [
+        "youtube.com",
+        "youtu.be",
+        "scribd.com",
+        "facebook.com",
+        "twitter.com",
+        "x.com",
+        "tiktok.com",
+        "instagram.com",
+        "reddit.com",
+      ],
     }),
   });
 

@@ -103,7 +103,7 @@ export function useWorkspaceNodes() {
     const parentPos = parent?.position || { x: 400, y: 300 };
     const children = edges.filter(e => e.source === parentId);
     const maxChildren = 6;
-    const angle = -Math.PI / 2 + (children.length * (2 * Math.PI / maxChildren));
+    const angle = Math.PI / 2 + (children.length * (2 * Math.PI / maxChildren));
     return {
       x: parentPos.x + Math.cos(angle) * 280,
       y: parentPos.y + Math.sin(angle) * 280,

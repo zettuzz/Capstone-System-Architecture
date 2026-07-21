@@ -6,6 +6,7 @@ import { useLLMProvider } from '@/components/LLMProviderContext';
 import { readSSEStream } from '@/lib/stream';
 import { findRootIdea, getSubtreeNodes } from '@/lib/workspace-utils';
 import { estimateTokensFromMessages } from '@/lib/user-keys';
+import { setSearchContext } from '@/lib/search-context';
 
 interface UseWorkspaceAIParams {
   nodesRef: React.MutableRefObject<any[]>;
@@ -84,27 +85,58 @@ export function useWorkspaceAI({
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, maxResults: 5 }),
+        body: JSON.stringify({ query, maxResults: 3 }),
       });
       const data = await res.json();
-      const results = data.results?.results || [];
+      const rawResults = data.results?.results || [];
+
+      const noisyDomains = ['youtube.com', 'youtu.be', 'scribd.com', 'facebook.com', 'twitter.com', 'x.com', 'tiktok.com', 'instagram.com'];
+      const results = rawResults
+        .filter((r: { url: string; content: string }) => {
+          const url = r.url.toLowerCase();
+          if (noisyDomains.some(d => url.includes(d))) return false;
+          if (!r.content || r.content.trim().length < 50) return false;
+          return true;
+        })
+        .slice(0, 3);
+
       const summary = results.length > 0
         ? results.map((r: { title: string; url: string; content: string }) => `**${r.title}**: ${r.content}`).join('\n\n')
         : 'No similar systems found via web search.';
 
-      createNewNode(
+      const searchContextText = results.length > 0
+        ? results.map((r: { title: string; url: string; content: string }) => `${r.title}: ${r.content}`).join('\n')
+        : '';
+
+      const rootIdeaId = lastInteractedNode
+        ? findRootIdea(lastInteractedNode, nodesRef.current, edgesRef.current)
+        : null;
+      const chainTail = rootIdeaId && chainTails[rootIdeaId];
+      const parentForResearch = chainTail || lastInteractedNode;
+
+      const researchNodeId = createNewNode(
         'Research: Similar Systems',
-        lastInteractedNode,
+        parentForResearch,
         `Web search for similar systems. Found ${results.length} results.`,
         'research',
         'research',
         [{ role: 'assistant', content: `## Research Findings\n\n${summary}` }]
       );
 
+      if (rootIdeaId && researchNodeId) {
+        setChainTails(prev => ({ ...prev, [rootIdeaId]: researchNodeId }));
+      }
+
+      if (searchContextText) {
+        setSearchContext(searchContextText);
+      }
+
       if (lastInteractedNode) {
         handleAddMessage(lastInteractedNode, {
           role: 'assistant',
-          content: `I found ${results.length} similar systems. Check the Research node for details. Would you like me to grade your project now?`
+          content: results.length > 0
+            ? `I found ${results.length} similar systems. Check the Research node for details. Ready to continue building your system?`
+            : `I didn't find much similar out there — which could mean your idea is unique! Ready to move forward?`
         });
       }
     } catch (err) {
@@ -112,7 +144,7 @@ export function useWorkspaceAI({
     } finally {
       setIsSearching(false);
     }
-  }, [createNewNode, handleAddMessage, lastInteractedNode]);
+  }, [createNewNode, handleAddMessage, lastInteractedNode, nodesRef, edgesRef, setChainTails]);
 
   const handleGradeProject = useCallback(async (sourceNodeId?: string | null) => {
     setIsGrading(true);

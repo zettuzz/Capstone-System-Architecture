@@ -36,7 +36,7 @@ export interface ScheduleItem {
 }
 
 export interface InterviewInstruction {
-  action: 'create_node' | 'update_node' | 'search_research' | 'grade_project' | 'complete_project_review';
+  action: 'create_node' | 'update_node' | 'search_research' | 'grade_project' | 'complete_project_review' | 'generate_blueprint';
   nodeTitle?: string;
   nodeSummary?: string;
   nodeType?: 'topic' | 'research' | 'idea';

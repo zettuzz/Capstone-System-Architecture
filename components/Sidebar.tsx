@@ -3,7 +3,6 @@
 import { useUser } from '@clerk/nextjs';
 import { useRouter, usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import LLMProviderSwitch from '@/components/LLMProviderSwitch';
 import APIKeyPrompt from '@/components/APIKeyPrompt';
 import { useLLMProvider } from '@/components/LLMProviderContext';
 import { UserButton } from '@clerk/nextjs';
@@ -162,8 +161,6 @@ export default function Sidebar({ currentProjectId }: SidebarProps) {
         </nav>
 
         <div className="p-3 border-t border-surface-border space-y-3">
-          <LLMProviderSwitch />
-
           <button
             onClick={() => setShowKeyPrompt(true)}
             className="flex items-center gap-2 w-full px-3 py-2 text-left text-text-muted hover:text-white hover:bg-surface-highlight rounded-none transition-colors font-mono text-[12px]"

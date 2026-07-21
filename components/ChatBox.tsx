@@ -8,6 +8,7 @@ import { useLLMProvider } from '@/components/LLMProviderContext';
 import { readSSEStream } from '@/lib/stream';
 import APIKeyPrompt from '@/components/APIKeyPrompt';
 import { estimateTokensFromMessages } from '@/lib/user-keys';
+import { parseInstruction } from '@/lib/instruction-parser';
 
 const md = new MarkdownIt({ html: false, breaks: true, linkify: true });
 
@@ -150,13 +151,13 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
           [
             { role: 'user', content: initialMessage }
           ],
-          (content) => setMessages([userMsg, { role: 'assistant', content }]),
+          (content) => setMessages([userMsg, { role: 'assistant', content: parseInstruction(content).clean }]),
           () => setMessages([userMsg, { role: 'assistant', content: `Got it — "${initialMessage}". Tell me more about what you're envisioning for this capstone.` }])
         );
       } else {
         await fetchStream(
           [],
-          (content) => setMessages([{ role: 'assistant', content }]),
+          (content) => setMessages([{ role: 'assistant', content: parseInstruction(content).clean }]),
           () => setMessages([{ role: 'assistant', content: `Welcome to CapstoneAI! I'm your thesis adviser. Let's start with your project idea. What problem do you want to solve with your capstone?` }])
         );
       }
@@ -192,7 +193,7 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
     await fetchStream(
       newMessages.map(m => ({ role: m.role, content: m.content })),
       (content) => {
-        setMessages([...newMessages, { role: 'assistant', content }]);
+        setMessages([...newMessages, { role: 'assistant', content: parseInstruction(content).clean }]);
 
         if (!searchContext && containsSearchIntent(content)) {
           triggerSearch(newMessages);
@@ -343,7 +344,7 @@ const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(({ title, initialMessage
               {streamingContent ? (
                 <div
                   className="prose-terminal text-text-main leading-relaxed text-[15px]"
-                  dangerouslySetInnerHTML={{ __html: md.render(streamingContent) }}
+                  dangerouslySetInnerHTML={{ __html: md.render(parseInstruction(streamingContent).clean) }}
                 />
               ) : (
                 <div className="flex items-center gap-1.5 mt-1">

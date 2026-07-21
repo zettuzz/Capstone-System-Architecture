@@ -7,9 +7,11 @@ interface WorkspaceToolbarProps {
   nodeCount: number;
   blueprintReady: boolean;
   projectTitle?: string;
+  hasBlueprint: boolean;
+  onShowBlueprint: () => void;
 }
 
-export default function WorkspaceToolbar({ onGenerateBlueprint, onNewIdea, onAutoLayout, nodeCount, blueprintReady, projectTitle }: WorkspaceToolbarProps) {
+export default function WorkspaceToolbar({ onGenerateBlueprint, onNewIdea, onAutoLayout, nodeCount, blueprintReady, projectTitle, hasBlueprint, onShowBlueprint }: WorkspaceToolbarProps) {
   return (
     <div className="flex items-center justify-between px-4 py-2 bg-surface border-b border-surface-border">
       <div className="flex items-center gap-3 min-w-0">
@@ -47,21 +49,33 @@ export default function WorkspaceToolbar({ onGenerateBlueprint, onNewIdea, onAut
           Auto Layout
         </button>
 
-        <button
-          onClick={onGenerateBlueprint}
-          disabled={!blueprintReady}
-          title={blueprintReady ? 'Generate Blueprint' : 'Finish generating the structure first'}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-mono font-bold transition-colors ${
-            blueprintReady
-              ? 'bg-white text-black hover:bg-neutral-200'
-              : 'bg-white/20 text-text-muted cursor-not-allowed'
-          }`}
-        >
-          <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 600 'GRAD' 0 'opsz' 20" }}>
-            auto_awesome
-          </span>
-          Generate Blueprint
-        </button>
+        {hasBlueprint ? (
+          <button
+            onClick={onShowBlueprint}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-black text-[12px] font-mono font-bold hover:bg-neutral-200 transition-colors"
+          >
+            <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 600 'GRAD' 0 'opsz' 20" }}>
+              auto_awesome
+            </span>
+            Show Blueprint
+          </button>
+        ) : (
+          <button
+            onClick={onGenerateBlueprint}
+            disabled={!blueprintReady}
+            title={blueprintReady ? 'Generate Blueprint' : 'Finish generating the structure first'}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-mono font-bold transition-colors ${
+              blueprintReady
+                ? 'bg-white text-black hover:bg-neutral-200'
+                : 'bg-white/20 text-text-muted cursor-not-allowed'
+            }`}
+          >
+            <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 0 'wght' 600 'GRAD' 0 'opsz' 20" }}>
+              auto_awesome
+            </span>
+            Generate Blueprint
+          </button>
+        )}
       </div>
     </div>
   );

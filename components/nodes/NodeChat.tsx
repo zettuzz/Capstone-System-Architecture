@@ -7,6 +7,7 @@ import { useLLMProvider } from '@/components/LLMProviderContext';
 import { readSSEStream } from '@/lib/stream';
 import { parseInstruction, shouldSuggestNode, extractNodeSuggestion } from '@/lib/instruction-parser';
 import { estimateTokensFromMessages } from '@/lib/user-keys';
+import { getAndClearSearchContext } from '@/lib/search-context';
 import APIKeyPrompt from '@/components/APIKeyPrompt';
 
 const md = new MarkdownIt({ html: false, breaks: true, linkify: true });
@@ -72,6 +73,8 @@ export default function NodeChat({ nodeId, messages, onAddMessage, onSuggestNode
     setIsLoading(true);
 
     const runRequest = async (): Promise<void> => {
+      const searchCtx = getAndClearSearchContext();
+
       let response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -85,6 +88,7 @@ export default function NodeChat({ nodeId, messages, onAddMessage, onSuggestNode
           nodeTitle: nodeTitle,
           nodeId: nodeId,
           nodeContext: `This chat is about: ${nodeTitle}`,
+          searchContext: searchCtx || undefined,
           provider,
           userApiKey,
         }),
@@ -107,6 +111,7 @@ export default function NodeChat({ nodeId, messages, onAddMessage, onSuggestNode
               nodeTitle: nodeTitle,
               nodeId: nodeId,
               nodeContext: `This chat is about: ${nodeTitle}`,
+              searchContext: searchCtx || undefined,
               provider,
               userApiKey,
             }),
@@ -367,22 +372,37 @@ export default function NodeChat({ nodeId, messages, onAddMessage, onSuggestNode
 }
 
 function getSystemContext(nodeTitle: string, nodeType: string, phase?: InterviewPhase): string {
-  const baseContext = `You are CapstoneAI, helping with a capstone project.
+  const baseContext = `You are CapstoneAI, a friendly senior student helping a beginner with their capstone project.
 Current topic: "${nodeTitle}" (type: ${nodeType})
-Keep responses focused on this specific topic.
-Only suggest FREE and open-source tools.
-Be concise and actionable.`;
+
+## Your Personality
+- Warm, casual, encouraging — use "we" language ("What are we building?")
+- Keep every response to 2-3 sentences max
+- Say "app" not "application", "build" not "develop", "free" not "open-source"
+- If the student seems confused, give examples to help them understand
+
+## Rules
+- ONE question per response. Never bundle questions.
+- Brief acknowledgment before the next question. Example: "Nice! A web app for booking courts. How many people are on your team?"
+- If the student's answer is vague, gently ask for more detail before moving on
+- Never produce tables, roadmaps, multi-section analyses, or numbered lists with sub-items
+- Never ask about resource allocation, bottleneck analysis, or development tracks
+- Only suggest FREE tools — Web app → Next.js + Supabase + Tailwind CSS + Vercel; Mobile app → React Native (Expo) + Supabase; Desktop app → Electron + Supabase; Hybrid → Next.js + React Native + Supabase; Firebase is a good alternative for real-time apps
+- If the student writes in Filipino, respond in Filipino
+- Only create a node when you have gathered ALL required information for that topic
+- If any part is missing or vague, ask a follow-up WITHOUT creating a node
+- Only reference search results if directly relevant. If low quality, say "I didn't find much" and move on.`;
 
   if (phase) {
-    return `${baseContext}\nCurrent interview phase: ${phase}. Ask questions appropriate for this phase.`;
+    return `${baseContext}\nInterview phase: ${phase}. Ask questions appropriate for this phase.`;
   }
 
   if (nodeType === 'research') {
-    return `${baseContext}\nThis node is for research. Help analyze findings, identify gaps, and suggest next research directions.`;
+    return `${baseContext}\nThis is a research node. Analyze findings briefly (1-2 sentences max) and suggest next steps.`;
   }
 
   if (nodeType === 'topic') {
-    return `${baseContext}\nThis is a sub-topic of the main project. Provide specific guidance for this area.`;
+    return `${baseContext}\nThis is a sub-topic. Provide specific guidance for this area.`;
   }
 
   return baseContext;
