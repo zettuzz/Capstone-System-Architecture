@@ -44,7 +44,7 @@ next-env.d.ts
 /.clerk/
 
 # supabase local config (not needed for production)
-/supabase/config.toml
+/supabase/
 
 # generated tool output
 /graphify-out/
